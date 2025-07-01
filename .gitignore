@@ -136,3 +136,6 @@ dmypy.json
 .vscode
 
 *.pth
+
+*.png
+*.mp4

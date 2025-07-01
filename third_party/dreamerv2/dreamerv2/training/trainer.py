@@ -193,8 +193,9 @@ class Trainer(object):
             attn_flat = self.ObsEncoder.slot_attn.last_attn       # (B*(S+1), K, Hp*Wp)
             Hp, Wp     = self.ObsEncoder.slot_attn.last_Hp_Wp
             B          = obs.shape[0]
-            # reshape into (B, S+1, K, Hp, Wp)
-            attn = attn_flat.view(B, self.seq_len+1, -1, Hp, Wp)
+            # reshape into (B, T, K, Hp, Wp) where T = actual rollout length
+            B, T = obs.shape[0], obs.shape[1]
+            attn = attn_flat.view(B, T, -1, Hp, Wp)
 
             # (2) spatial continuity (TV loss)
             tv = torch.abs(attn[:, :, :, 1:, :] - attn[:, :, :, :-1, :]).mean()
@@ -357,3 +358,20 @@ class Trainer(object):
             print('\n Discount decoder: \n', self.DiscountModel)
         print('\n Actor: \n', self.ActionModel)
         print('\n Critic: \n', self.ValueModel)
+    
+    def load_model(self, ckpt_path):
+        """Load model checkpoint from given path."""
+        saved_dict = torch.load(ckpt_path, map_location=self.device)
+        self.load_save_dict(saved_dict)
+
+    def eval(self):
+        """Set all model components to eval mode."""
+        self.RSSM.eval()
+        self.ObsEncoder.eval()
+        self.ObsDecoder.eval()
+        self.RewardDecoder.eval()
+        self.ActionModel.eval()
+        self.ValueModel.eval()
+        self.TargetValueModel.eval()
+        if hasattr(self, 'DiscountModel'):
+            self.DiscountModel.eval()
