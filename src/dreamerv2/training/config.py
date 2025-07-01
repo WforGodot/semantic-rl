@@ -4,6 +4,8 @@ import numpy as np
 import torch.nn as nn
 from dataclasses import dataclass, field
 from typing import Any, Tuple, Dict
+import hydra
+from omegaconf import MISSING
 
 # Following HPs are not a result of detailed tuning.   
 
@@ -11,9 +13,9 @@ from typing import Any, Tuple, Dict
 class MinAtarConfig():
     '''default HPs that are known to work for MinAtar envs '''
     #env desc
-    env : str                                           
-    obs_shape: Tuple                                            
-    action_size: int
+    env : str = MISSING                                         
+    obs_shape: Tuple[int, ...] = MISSING
+    action_size: int = MISSING
     pixel: bool = True
     action_repeat: int = 1
     
@@ -85,6 +87,9 @@ class MiniGridConfig:
     env: str
     obs_shape: Tuple
     action_size: int
+    id: int = 0
+    seed: int = 123
+    device: str = "cuda"
     pixel: bool = True          # set False if you switch to FlatObsWrapper
     action_repeat: int = 1
     time_limit: int = 300       # was 1000

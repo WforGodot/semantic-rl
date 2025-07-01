@@ -1,0 +1,11 @@
+_target_: dreamerv2.training.config.MiniGridConfig
+env: MiniGrid-Empty-5x5-v0
+obs_shape:
+- 3
+- 84
+- 84
+action_size: 7
+train_steps: 10000
+batch_size: 8
+seq_len: 16
+id: 0

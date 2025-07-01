@@ -1,0 +1,108 @@
+_target_: dreamerv2.training.config.MiniGridConfig
+env: MiniGrid-Empty-5x5-v0
+obs_shape:
+- 3
+- 84
+- 84
+action_size: 7
+id: 0
+seed: 123
+device: cuda
+pixel: true
+action_repeat: 1
+time_limit: 300
+capacity: 2000
+obs_dtype: uint8
+action_dtype: float32
+train_steps: 5000
+train_every: 8
+collect_intervals: 4
+batch_size: 16
+seq_len: 16
+eval_episode: 5
+eval_render: false
+save_every: 1000
+seed_steps: 1000
+seed_episodes: 5
+model_dir: results
+gif_dir: results
+rssm_type: discrete
+embedding_size: 128
+rssm_node_size: 128
+rssm_info:
+  deter_size: 128
+  stoch_size: 32
+  class_size: 16
+  category_size: 16
+  min_std: 0.1
+grad_clip: 40.0
+discount_: 0.99
+lambda_: 0.95
+horizon: 6
+lr:
+  model: 0.0003
+  actor: 0.0001
+  critic: 0.0001
+loss_scale:
+  kl: 2.0
+  reward: 1.0
+  discount: 5.0
+  obs: 1.0
+kl:
+  use_kl_balance: true
+  kl_balance_scale: 0.6
+  use_free_nats: false
+  free_nats: 1.0
+use_slow_target: true
+slow_target_update: 50
+slow_target_fraction: 1.0
+actor:
+  layers: 3
+  node_size: 64
+  dist: one_hot
+  min_std: 0.0001
+  init_std: 5
+  mean_scale: 5
+  activation: nn.ELU
+critic:
+  layers: 3
+  node_size: 64
+  dist: normal
+  activation: nn.ELU
+expl:
+  train_noise: 0.3
+  eval_noise: 0.0
+  expl_min: 0.05
+  expl_decay: 7000.0
+  expl_type: epsilon_greedy
+actor_grad: reinforce
+actor_grad_mix: 0.0
+actor_entropy_scale: 0.001
+obs_encoder:
+  layers: 3
+  node_size: 64
+  dist: null
+  activation: nn.ELU
+  kernel: 3
+  depth: 8
+  num_slots: 10
+  slot_dim: 32
+  slot_iters: 1
+obs_decoder:
+  layers: 3
+  node_size: 64
+  dist: normal
+  activation: nn.ELU
+  kernel: 3
+  depth: 8
+reward:
+  layers: 3
+  node_size: 64
+  dist: normal
+  activation: nn.ELU
+discount:
+  layers: 3
+  node_size: 64
+  dist: binary
+  activation: nn.ELU
+  use: true
