@@ -179,10 +179,36 @@ class Trainer(object):
         pcont_loss = self._pcont_loss(pcont_dist, nonterms[1:])
         prior_dist, post_dist, div = self._kl_loss(prior, posterior)
 
-        model_loss = (self.loss_scale['kl'] * div +
-              self.loss_scale['reward'] * reward_loss +
-              self.loss_scale['obs'] * obs_loss +
-              self.loss_scale['discount'] * pcont_loss)
+        # Base world-model loss
+        model_loss = (
+            self.loss_scale['kl']     * div +
+            self.loss_scale['reward'] * reward_loss +
+            self.loss_scale['obs']    * obs_loss +
+            self.loss_scale['discount'] * pcont_loss
+        )
+
+        # ─── Slot-Attention bias losses ───
+        if self.config.pixel:
+            # (1) get the last attention maps and spatial dims
+            attn_flat = self.ObsEncoder.slot_attn.last_attn       # (B*(S+1), K, Hp*Wp)
+            Hp, Wp     = self.ObsEncoder.slot_attn.last_Hp_Wp
+            B          = obs.shape[0]
+            # reshape into (B, S+1, K, Hp, Wp)
+            attn = attn_flat.view(B, self.seq_len+1, -1, Hp, Wp)
+
+            # (2) spatial continuity (TV loss)
+            tv = torch.abs(attn[:, :, :, 1:, :] - attn[:, :, :, :-1, :]).mean()
+            tv = tv + torch.abs(attn[:, :, :, :, 1:] - attn[:, :, :, :, :-1]).mean()
+
+            # (3) temporal smoothness
+            m_t, m_tm1 = attn[:, 1:], attn[:, :-1]
+            temp = torch.abs(m_t - m_tm1).mean()
+
+            # (4) combine with small weights
+            lambda_tv   = 1e-2
+            lambda_temp = 1e-2
+            model_loss = model_loss + lambda_tv * tv + lambda_temp * temp
+
         return model_loss, div, obs_loss, reward_loss, pcont_loss, prior_dist, post_dist, posterior
 
     def _actor_loss(self, imag_reward, imag_value, discount_arr, imag_log_prob, policy_entropy):
