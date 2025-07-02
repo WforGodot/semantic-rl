@@ -71,6 +71,20 @@ class MinAtarConfig():
     discount: Dict = field(default_factory=lambda:{'layers':3, 'node_size':100, 'dist':'binary', 'activation':nn.ELU, 'use':True})
 
 
+
+# ─── New Slot-Attention Bias Weights Config ─────────────────────────────────
+@dataclass
+class SlotAttentionLossConfig:
+    """Weights for slot-attention mask regularizers"""
+    box: float = 1e-2       # bounding-box variance loss weight
+    tv: float = 1e-2        # spatial continuity (total variation) loss weight
+    temporal: float = 1e-2  # temporal smoothness loss weight
+
+@dataclass
+class SlotAttentionConfig:
+    loss: SlotAttentionLossConfig = field(default_factory=SlotAttentionLossConfig)
+
+
 # ---------------------------------------------------------------------
 # MiniGridConfig – tuned for small-GPU speed & stability
 # ---------------------------------------------------------------------
@@ -154,6 +168,9 @@ class MiniGridConfig:
     slow_target_update: int = 50
     slow_target_fraction: float = 1.0
 
+     # ─── Slot-Attention Bias Weights ───────────────────────────────────────────
+    slot_attention: SlotAttentionConfig = field(default_factory=SlotAttentionConfig)
+
     # ─── Actor / Critic Heads ─────────────────────────────────────
     actor: Dict = field(
         default_factory=lambda: {
@@ -199,7 +216,7 @@ class MiniGridConfig:
             # ─── Slot‐Attention params ───
             "num_slots": 10,        
             "slot_dim": 32,         # smaller per-slot embedding
-            "slot_iters": 1,        # only one attention iteration
+            "slot_iters": 3,        # two attention iterations
         }
     )
     obs_decoder: Dict = field(

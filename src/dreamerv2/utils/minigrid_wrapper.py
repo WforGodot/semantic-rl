@@ -1,11 +1,11 @@
-# File: dreamerv2/envs/minigrid_wrapper.py
+# File: src/dreamerv2/envs/minigrid_wrapper.py
 
 import numpy as np
 import gymnasium as gym
 from gymnasium.wrappers import ResizeObservation
 from gymnasium import spaces
 from gymnasium import ObservationWrapper
-from minigrid.wrappers import RGBImgPartialObsWrapper, ImgObsWrapper
+from minigrid.wrappers import RGBImgPartialObsWrapper, ImgObsWrapper, FullyObsWrapper
 import inspect
 
 class GymMiniGrid(ObservationWrapper):
@@ -15,7 +15,8 @@ class GymMiniGrid(ObservationWrapper):
     2) Extracts image as sole observation
     3) Resizes to `resize_shape`
     4) Transposes from H×W×C → C×H×W
-    5) Converts Gymnasium API to classic Gym:
+    5) Normalizes pixels to [0,1] float32
+    6) Converts Gymnasium API to classic Gym:
        - step(action) → (obs, reward, done, info)
        - reset(... ) → obs
     """
@@ -27,9 +28,8 @@ class GymMiniGrid(ObservationWrapper):
     ):
         # 1) Base MiniGrid env (Gymnasium API)
         env = gym.make(env_name, render_mode='rgb_array')
-        # 2) Partial egocentric RGB image
-        env = RGBImgPartialObsWrapper(env, tile_size=tile_size)
-        # 3) Expose 'image' as sole observation
+
+        env = FullyObsWrapper(env)
         env = ImgObsWrapper(env)
         # 4) Resize to target H×W
         env = ResizeObservation(env, shape=resize_shape)
@@ -39,18 +39,19 @@ class GymMiniGrid(ObservationWrapper):
         # Detect if reset accepts seed
         self._reset_accepts_seed = 'seed' in inspect.signature(self.env.reset).parameters
 
-        # Update observation_space to C×H×W
+        # 5) Normalize obs: define space as float32 [0.0, 1.0]
         h, w, c = self.observation_space.shape
         self.observation_space = spaces.Box(
-            low=0,
-            high=255,
+            low=0.0,
+            high=1.0,
             shape=(c, h, w),
-            dtype=np.uint8
+            dtype=np.float32
         )
 
     def observation(self, obs: np.ndarray) -> np.ndarray:
-        # Transpose H×W×C → C×H×W
-        return obs.transpose(2, 0, 1)
+        # Transpose H×W×C → C×H×W and normalize to [0,1]
+        obs = obs.transpose(2, 0, 1)
+        return obs.astype(np.float32) / 255.0
 
     def step(self, action):
         # Gymnasium step → (obs, reward, terminated, truncated, info)

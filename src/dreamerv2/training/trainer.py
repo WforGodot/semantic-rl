@@ -192,10 +192,8 @@ class Trainer(object):
             # (1) get the last attention maps and spatial dims
             attn_flat = self.ObsEncoder.slot_attn.last_attn       # (B*(S+1), K, Hp*Wp)
             Hp, Wp     = self.ObsEncoder.slot_attn.last_Hp_Wp
-            B          = obs.shape[0]
-            # reshape into (B, T, K, Hp, Wp) where T = actual rollout length
-            B, T = obs.shape[0], obs.shape[1]
-            attn = attn_flat.view(B, T, -1, Hp, Wp)
+            B, T       = obs.shape[0], obs.shape[1]
+            attn       = attn_flat.view(B, T, -1, Hp, Wp)        # (B, T, K, Hp, Wp)
 
             # (2) spatial continuity (TV loss)
             tv = torch.abs(attn[:, :, :, 1:, :] - attn[:, :, :, :-1, :]).mean()
@@ -205,12 +203,23 @@ class Trainer(object):
             m_t, m_tm1 = attn[:, 1:], attn[:, :-1]
             temp = torch.abs(m_t - m_tm1).mean()
 
-            # (4) combine with small weights
-            lambda_tv   = 1e-2
-            lambda_temp = 1e-2
-            model_loss = model_loss + lambda_tv * tv + lambda_temp * temp
+            # (4) bounding box regularization via slot variance
+            ys = torch.linspace(0, Hp - 1, Hp, device=attn.device).view(1,1,1,Hp,1)
+            xs = torch.linspace(0, Wp - 1, Wp, device=attn.device).view(1,1,1,1,Wp)
+            y_mean = (attn * ys).sum(dim=(3,4), keepdim=True)
+            x_mean = (attn * xs).sum(dim=(3,4), keepdim=True)
+            y_var  = (attn * (ys - y_mean)**2).sum(dim=(3,4), keepdim=True)
+            x_var  = (attn * (xs - x_mean)**2).sum(dim=(3,4), keepdim=True)
+            box_loss = (y_var + x_var).mean()
+
+            # (5) combine with configurable weights
+            lambda_box   = self.config.slot_attention.loss.box
+            lambda_tv    = self.config.slot_attention.loss.tv
+            lambda_temp  = self.config.slot_attention.loss.temporal
+            model_loss = model_loss + lambda_box * box_loss + lambda_tv * tv + lambda_temp * temp
 
         return model_loss, div, obs_loss, reward_loss, pcont_loss, prior_dist, post_dist, posterior
+
 
     def _actor_loss(self, imag_reward, imag_value, discount_arr, imag_log_prob, policy_entropy):
 

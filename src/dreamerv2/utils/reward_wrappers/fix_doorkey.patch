@@ -1,0 +1,30 @@
+*** Begin Patch
+*** Update File: MiniGrid_DoorKey_6x6_v0.py
+@@     def _find_objects(self, unwrapped_env):
+-        if self.key_pos and self.door_pos:
+-            return
+-        for y in range(unwrapped_env.height):
+-            for x in range(unwrapped_env.width):
++        # If we've already located both, skip further searches
++        if self.key_pos and self.door_pos:
++            return
++
++        # Search grid for Key and Door objects
++        found_key = False
++        found_door = False
++        for y in range(unwrapped_env.height):
++            for x in range(unwrapped_env.width):
+             cell = unwrapped_env.grid.get(x, y)
+             if isinstance(cell, Key):
+                 self.key_pos = (x, y)
+-        if not self.key_pos or not self.door_pos:
+-            raise RuntimeError("Could not find Key or Door in the environment grid.")
++                found_key = True
++            elif isinstance(cell, Door):
++                self.door_pos = (x, y)
++                found_door = True
++
++        # If either object isn’t in the grid yet, just skip shaping this step
++        if not found_key or not found_door:
++            return
+*** End Patch

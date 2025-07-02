@@ -166,7 +166,8 @@ def main(args):
             if step % trainer.config.slow_target_update == 0:
                 trainer.update_target()
             if step % trainer.config.save_every == 0:
-                trainer.save_model(step)
+                #trainer.save_model(step)
+                continue # skip saving during training for now
 
             # select action via world model
             with torch.no_grad():
