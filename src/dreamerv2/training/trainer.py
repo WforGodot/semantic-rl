@@ -3,6 +3,7 @@
 import numpy as np
 import torch 
 import torch.optim as optim
+import torch.amp as amp
 import os 
 
 from dreamerv2.utils.module import get_parameters, FreezeParameters
@@ -38,6 +39,7 @@ class Trainer(object):
 
         self._model_initialize(config)
         self._optim_initialize(config)
+        self.scaler = amp.GradScaler("cuda")              # ← initialize gradient scaler
 
     def collect_seed_episodes(self, env):
 
@@ -84,26 +86,46 @@ class Trainer(object):
             rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device).unsqueeze(-1)   #t-1 to t+seq_len-1
             nonterms = torch.tensor(1-terms, dtype=torch.float32).to(self.device).unsqueeze(-1)  #t-1 to t+seq_len-1
 
-            model_loss, kl_loss, obs_loss, reward_loss, pcont_loss, prior_dist, post_dist, posterior = self.representation_loss(obs, actions, rewards, nonterms)
+            # --- BEGIN FIX: mixed precision autocast for world model ---
+            with amp.autocast(device_type="cuda"):  # autocast for mixed precision
+               model_loss, kl_loss, obs_loss, reward_loss, pcont_loss, \
+               prior_dist, post_dist, posterior = \
+                   self.representation_loss(obs, actions, rewards, nonterms)
+           # --- END FIX ---
             
             self.model_optimizer.zero_grad()
-            model_loss.backward()
-            grad_norm_model = torch.nn.utils.clip_grad_norm_(get_parameters(self.world_list), self.grad_clip_norm)
-            self.model_optimizer.step()
+            # --- BEGIN FIX: scale model loss for mixed precision ---
+            self.scaler.scale(model_loss).backward()                                   # scale & backward
+            self.scaler.unscale_(self.model_optimizer)                                 # unscale before clip
+            grad_norm_model = torch.nn.utils.clip_grad_norm_(                          # clip grads
+                get_parameters(self.world_list), self.grad_clip_norm)
+            self.scaler.step(self.model_optimizer)                                     # step via scaler
+            self.scaler.update()                                                       # update the scale
+            # --- END FIX ---
 
-            actor_loss, value_loss, target_info = self.actorcritc_loss(posterior)
+                       # --- BEGIN FIX: mixed precision autocast for actor & critic ---
+            with amp.autocast(device_type="cuda"):
+                actor_loss, value_loss, target_info = self.actorcritc_loss(posterior)
+           # --- END FIX ---
 
             self.actor_optimizer.zero_grad()
             self.value_optimizer.zero_grad()
+            # --- BEGIN FIX: scale actor & critic losses for mixed precision ---
+            # Actor
+            self.scaler.scale(actor_loss).backward()                                    # scale & backward actor
+            self.scaler.unscale_(self.actor_optimizer)                                  # unscale before clip
+            grad_norm_actor = torch.nn.utils.clip_grad_norm_(                           # clip actor grads
+                get_parameters(self.actor_list), self.grad_clip_norm)
+            self.scaler.step(self.actor_optimizer)                                      # actor step
 
-            actor_loss.backward()
-            value_loss.backward()
+            # Critic / Value
+            self.scaler.scale(value_loss).backward()                                    # scale & backward value
+            self.scaler.unscale_(self.value_optimizer)                                  # unscale before clip
+            grad_norm_value = torch.nn.utils.clip_grad_norm_(                           # clip value grads
+                get_parameters(self.value_list), self.grad_clip_norm)
+            self.scaler.step(self.value_optimizer)                                      # value step
 
-            grad_norm_actor = torch.nn.utils.clip_grad_norm_(get_parameters(self.actor_list), self.grad_clip_norm)
-            grad_norm_value = torch.nn.utils.clip_grad_norm_(get_parameters(self.value_list), self.grad_clip_norm)
-
-            self.actor_optimizer.step()
-            self.value_optimizer.step()
+            self.scaler.update()  
 
             with torch.no_grad():
                 prior_ent = torch.mean(prior_dist.entropy())
@@ -154,6 +176,7 @@ class Trainer(object):
             imag_value = imag_value_dist.mean
             discount_dist = self.DiscountModel(imag_modelstates)
             discount_arr = self.discount*torch.round(discount_dist.base_dist.probs)              #mean = prob(disc==1)
+            discount_arr = discount_arr.float() 
 
         actor_loss, discount, lambda_returns = self._actor_loss(imag_reward, imag_value, discount_arr, imag_log_prob, policy_entropy)
         value_loss = self._value_loss(imag_modelstates, discount, lambda_returns)     
@@ -230,6 +253,14 @@ class Trainer(object):
 
 
     def _actor_loss(self, imag_reward, imag_value, discount_arr, imag_log_prob, policy_entropy):
+
+        # --- BEGIN FIX: unify dtypes (AMP) --------------------------------
+        imag_reward   = imag_reward.float()
+        imag_value    = imag_value.float()
+        discount_arr  = discount_arr.float()
+        imag_log_prob = imag_log_prob.float()
+        policy_entropy = policy_entropy.float()
+        # --- END FIX -------------------------------------------------------
 
         lambda_returns = compute_return(imag_reward[:-1], imag_value[:-1], discount_arr[:-1], bootstrap=imag_value[-1], lambda_=self.lambda_)
         

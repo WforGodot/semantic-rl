@@ -77,61 +77,78 @@ class RewardShaper:
     def shape_reward(self, next_obs, base_reward, done, info):
         """
         Applies time penalty, novelty bonus, proximity/subgoal shaping, and final success reward.
-        Safely falls back to unshaped base_reward if env or agent_pos is missing.
+        On any internal error (e.g. missing env, None agent_pos, unexpected NoneType),
+        returns the raw base_reward unmodified.
         """
-        # --- BEGIN FIX: guard against missing env or agent_pos -------------
+        # Early exit if we don’t even have an env to work with
         env = info.get("env")
         if env is None:
-            return base_reward  # no env → can’t shape
-        unwrapped_env = getattr(env, "unwrapped", None)
-        if unwrapped_env is None or not hasattr(unwrapped_env, "agent_pos"):
-            return base_reward  # missing underlying env or agent position
-        agent_pos = unwrapped_env.agent_pos
-        if agent_pos is None:
-            return base_reward  # agent_pos is None
-        # --- END FIX --------------------------------------------------------
+            return base_reward
 
-        # Time penalty
-        shaped = base_reward - self.step_penalty
-        self.step_count += 1
+        # Try everything inside a safe block
+        try:
+            unwrapped = getattr(env, "unwrapped", None)
+            agent_pos = getattr(unwrapped, "agent_pos", None)
+            if agent_pos is None:
+                return base_reward
 
-        # Initialize object positions on first step
-        if self.step_count == 1:
-            self._find_objects(unwrapped_env)
+            # 1) Time penalty
+            shaped = base_reward - self.step_penalty
+            self.step_count += 1
 
-        # Annealed novelty bonus
-        if agent_pos not in self.visited_positions:
-            anneal = max(0.0, 1.0 - self.step_count / self.max_steps)
-            shaped += self.novelty_bonus * anneal
-        self.visited_positions.add(agent_pos)
+            # 2) On first step, locate key & door
+            if self.step_count == 1:
+                self._find_objects(unwrapped)
 
-        # Proximity & subgoal rewards
-        if not self.key_picked:
-            dist = math.hypot(agent_pos[0] - self.key_pos[0],
-                            agent_pos[1] - self.key_pos[1])
-            if dist < self.prev_dist_to_key:
-                shaped += 0.02
-            self.prev_dist_to_key = dist
-            if unwrapped_env.carrying and isinstance(unwrapped_env.carrying, Key):
-                self.key_picked = True
-                shaped += self.key_base_reward + self._get_speed_bonus(self.optimal_steps_key)
-        elif not self.door_opened:
-            dist = math.hypot(agent_pos[0] - self.door_pos[0],
-                            agent_pos[1] - self.door_pos[1])
-            if dist < self.prev_dist_to_door:
-                shaped += 0.02
-            self.prev_dist_to_door = dist
-            door_cell = unwrapped_env.grid.get(*self.door_pos)
-            if isinstance(door_cell, Door) and door_cell.is_open:
-                self.door_opened = True
-                shaped += self.door_base_reward + self._get_speed_bonus(self.optimal_steps_door)
+            # 3) Novelty bonus (annealed)
+            if agent_pos not in self.visited_positions:
+                anneal = max(0.0, 1.0 - self.step_count / self.max_steps)
+                shaped += self.novelty_bonus * anneal
+            self.visited_positions.add(agent_pos)
 
-        # Final success reward
-        if base_reward > 0:
-            shaped += self.goal_base_reward + self._get_speed_bonus(self.optimal_steps_goal)
+            # 4) Proximity & subgoal shaping
+            if not self.key_picked:
+                # distance to key
+                dist = math.hypot(
+                    agent_pos[0] - self.key_pos[0],
+                    agent_pos[1] - self.key_pos[1]
+                )
+                if dist < self.prev_dist_to_key:
+                    shaped += 0.02
+                self.prev_dist_to_key = dist
 
-        # Reset episode state when done
-        if done:
-            self._reset_episode_state()
+                # picked key?
+                if unwrapped.carrying and isinstance(unwrapped.carrying, Key):
+                    self.key_picked = True
+                    shaped += self.key_base_reward + self._get_speed_bonus(self.optimal_steps_key)
 
-        return shaped
+            elif not self.door_opened:
+                # distance to door
+                dist = math.hypot(
+                    agent_pos[0] - self.door_pos[0],
+                    agent_pos[1] - self.door_pos[1]
+                )
+                if dist < self.prev_dist_to_door:
+                    shaped += 0.02
+                self.prev_dist_to_door = dist
+
+                # opened door?
+                door_cell = unwrapped.grid.get(*self.door_pos)
+                if isinstance(door_cell, Door) and door_cell.is_open:
+                    self.door_opened = True
+                    shaped += self.door_base_reward + self._get_speed_bonus(self.optimal_steps_door)
+
+            # 5) Final success reward
+            if base_reward > 0:
+                shaped += self.goal_base_reward + self._get_speed_bonus(self.optimal_steps_goal)
+
+            # 6) Reset internal state at episode end
+            if done:
+                self._reset_episode_state()
+
+            return shaped
+
+        except Exception:
+            # Any unexpected error → fallback to raw reward
+            return base_reward
+

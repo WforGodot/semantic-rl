@@ -7,7 +7,7 @@ import numpy as np
 import gymnasium as gym           # modern Gymnasium API for envs
 import gym as gym_old             # classic Gym for Discrete action-space conversion
 
-from gymnasium.vector import AsyncVectorEnv, VectorWrapper
+from gymnasium.vector import AsyncVectorEnv, VectorWrapper, AutoresetMode
 from dreamerv2.utils.wrapper import OneHotAction
 
 
@@ -81,33 +81,10 @@ def main(args):
     
     env_fns = [make_env(i) for i in range(args.num_envs)]
 
-    env = AsyncVectorEnv(env_fns)       # parallel CPU workers
-
-    # --- BEGIN FIX: Vector→Single-env adapter for Dreamer ---
-    class VecToSingle(VectorWrapper):
-        """
-        Run a VectorEnv in parallel, but expose only the first sub-env
-        as a classic (obs, reward, done, info) interface for Dreamer.
-        """
-        def reset(self, *args, **kwargs):
-            # Gymnasium reset() → (obs_batch, info_batch)
-            obs_b, _ = super().reset(*args, **kwargs)
-            return obs_b[0]          # pick first env’s obs
-
-        def step(self, actions):
-            # Gymnasium step() → (obs_b, rew_b, term_b, trunc_b, info_b)
-            obs_b, rew_b, term_b, trunc_b, info_b = super().step(actions)
-
-            # Combine termination flags
-            done_b = np.logical_or(term_b, trunc_b)
-
-            # Select the first env’s data
-            obs    = obs_b[0]
-            reward = float(rew_b[0])                   # scalar
-            done   = bool(done_b[0])                   # scalar
-            info   = info_b[0] if isinstance(info_b, (list, tuple)) else info_b
-
-            return obs, reward, done, info             # classic 4-tuple
+    env = AsyncVectorEnv(
+        env_fns,
+        autoreset_mode=AutoresetMode.NEXT_STEP  # ← correct param, resets each sub-env individually
+    )
 
     raw_c, raw_h, raw_w = env.single_observation_space.shape
     action_size          = env.single_action_space.shape[0]
@@ -142,9 +119,10 @@ def main(args):
         wandb_run = None
         
     try:
-        print('Starting training...')
+        print('Collecting seed episodes...')
         train_metrics = {}
         trainer.collect_seed_episodes(env)
+        print('Starting training...')
 
         # reset environment
         obs_b, _ = env.reset()
@@ -155,6 +133,7 @@ def main(args):
         scores = []
         best_mean_score = -float('inf')
         best_save_path = os.path.join(model_dir, 'models_best.pth')
+        episode_lengths = np.zeros(env.num_envs, dtype=int)  # ← track steps per env
 
         last_time = time.time()
         for step in range(1, trainer.config.train_steps + 1):
@@ -233,6 +212,13 @@ def main(args):
             # Step ALL N envs at once
             obs_n_b, rew_b, term_b, trunc_b, info_b = env.step(actions_b.cpu().numpy())
             done_b = np.logical_or(term_b, trunc_b)
+
+
+            episode_lengths += 1  # ← increment step counters for each env
+            for i, finished in enumerate(done_b):
+                if finished:
+                    print(f"Env {i} finished an episode in {episode_lengths[i]} steps")  # ← log finish & length
+                    episode_lengths[i] = 0  # ← reset counter for that env
             score_b = rew_b  # vector of length N
 
             # Add *each* transition into the buffer
@@ -270,8 +256,7 @@ def main(args):
                         print(f"NEW BEST! Saving best model (avg score: {best_mean_score:.2f})")
                         torch.save(trainer.get_save_dict(), best_save_path)
 
-                obs_b, _ = env.reset()
-                obs = obs_b[0]
+                obs = obs_n_b[0]
                 score = 0
                 prev_rssmstate = trainer.RSSM._init_rssm_state(env.num_envs)             # ← batched reset
                 prev_action    = torch.zeros(env.num_envs, trainer.action_size, device=device)  # ← (N, A)
