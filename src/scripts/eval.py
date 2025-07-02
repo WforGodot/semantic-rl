@@ -13,9 +13,20 @@ from dreamerv2.training.trainer import Trainer
 import imageio
 import torch.nn.functional as F
 
-
 def to_tensor(x, device):
-    """Convert numpy obs (C,H,W) to tensor batch (1,C,H,W)."""
+    """
+    Convert an observation to a (1,C,H,W) float32 tensor on `device`.
+
+    Handles Gymnasium’s (obs, info) tuples, vector-env batches, and lists.
+    """
+    # --- BEGIN FIX: robust observation conversion -----------------
+    if isinstance(x, tuple):                 # (obs, info)
+        x = x[0]
+    if isinstance(x, list):                  # list → ndarray
+        x = np.array(x)
+    if isinstance(x, np.ndarray) and x.ndim == 4:  # batched (B,C,H,W)
+        x = x[0]                             # keep first env
+    # --- END FIX --------------------------------------------------
     return torch.as_tensor(x, dtype=torch.float32, device=device).unsqueeze(0)
 
 
@@ -64,9 +75,17 @@ def main(args):
     trainer.eval()
 
     # Evaluate episodes and manually record overlays
+    all_scores = []
     for epi in range(args.eval_episodes):
         obs = env.reset()
+        # --- BEGIN FIX: unwrap reset output ------------------------------
+        if isinstance(obs, tuple):        # Gymnasium returns (obs, info)
+            obs = obs[0]
+        if isinstance(obs, np.ndarray) and obs.ndim == 4:  # vector env
+            obs = obs[0]
+        # --- END FIX ------------------------------------------------------
         done = False
+        score = 0
         prev_state = trainer.RSSM._init_rssm_state(1)
         prev_action = torch.zeros(1, discrete_n, device=device)
         frames = []
@@ -84,11 +103,20 @@ def main(args):
 
             # Step
             result = env.step(a_np)
-            if len(result) == 5:
+            if len(result) == 5:                                  # Gymnasium API
                 next_obs, rew, term, trunc, _ = result
-                done = term or trunc
-            else:
+                done = bool(
+                    (term[0]  if isinstance(term,  (list, np.ndarray)) else term)  or
+                    (trunc[0] if isinstance(trunc, (list, np.ndarray)) else trunc)
+                )
+                next_obs = next_obs[0] if isinstance(next_obs, np.ndarray) and next_obs.ndim == 4 else next_obs
+                reward   = float(rew[0]  if isinstance(rew,  (list, np.ndarray)) else rew)
+            else:                                                 # Classic Gym
                 next_obs, rew, done, _ = result
+                next_obs = next_obs[0] if isinstance(next_obs, np.ndarray) and next_obs.ndim == 4 else next_obs
+                reward   = float(rew[0] if isinstance(rew, (list, np.ndarray)) else rew)
+            
+            score += reward
 
             # SlotAttention overlay (last slot)
             attn_flat = trainer.ObsEncoder.slot_attn.last_attn
@@ -123,6 +151,16 @@ def main(args):
                 img_path = os.path.join(image_dir, f"{args.env}_{args.id}_ep{epi}_img{idx}.png")
                 imageio.imwrite(img_path, img)
             print(f"Saved {len(saved_imgs)} images to {image_dir}")
+         
+        all_scores.append(score)                   # ← keep episode return
+        print(f"Episode {epi}: return = {score:.2f}")  # immediate feedback
+    
+    avg_return = np.mean(all_scores)
+    std_return = np.std(all_scores)
+    print(
+        f"\nEvaluation finished over {args.eval_episodes} episodes "
+        f"→ mean return {avg_return:.2f} ± {std_return:.2f}"
+    )
 
 
 if __name__ == '__main__':
@@ -142,3 +180,7 @@ if __name__ == '__main__':
     parser.add_argument('--num-images', type=int, default=5, help='Random images per episode to save')
     args = parser.parse_args()
     main(args)
+
+
+# To run this script, use:
+# python scripts/eval.py --env MiniGrid-DoorKey-6x6-v0 --id overnight --device cuda --eval-episodes 3 --no-video --no-images

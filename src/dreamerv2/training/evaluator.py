@@ -54,23 +54,35 @@ class Evaluator(object):
         eval_episode = self.config.eval_episode
         eval_scores = []    
         for e in range(eval_episode):
-            obs, score = env.reset(), 0
+            reset_res   = env.reset()
+            obs         = reset_res[0] if isinstance(reset_res, tuple) else reset_res
+            if isinstance(obs, np.ndarray) and obs.ndim == 4:     # vector env
+                obs = obs[0]
+            score = 0                                             # keep counter
             done = False
             prev_rssmstate = self.RSSM._init_rssm_state(1)
             prev_action = torch.zeros(1, self.action_size).to(self.device)
             while not done:
                 with torch.no_grad():
-                    embed = self.ObsEncoder(torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device))    
+                    # convert to (1, C, H, W) tensor exactly as in training
+                    tensor_obs = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
+                    tensor_obs = tensor_obs.unsqueeze(0)
+                    embed = self.ObsEncoder(tensor_obs)    
                     _, posterior_rssm_state = self.RSSM.rssm_observe(embed, prev_action, not done, prev_rssmstate)
                     model_state = self.RSSM.get_model_state(posterior_rssm_state)
                     action, _ = self.ActionModel(model_state)
                     prev_rssmstate = posterior_rssm_state
                     prev_action = action
-                next_obs, rew, done, _ = env.step(action.squeeze(0).cpu().numpy())
-                if self.config.eval_render:
-                    env.render()
-                score += rew
-                obs = next_obs
+            # step returns batched results: (obs_batch, rew_batch, term_batch, trunc_batch, info)
+            next_obs_batch, rew_batch, term_batch, trunc_batch, _ = env.step(
+                action.squeeze(0).cpu().numpy()
+            )
+            done = bool(term_batch[0] or trunc_batch[0])
+            reward = float(rew_batch[0])
+            if self.config.eval_render:
+                env.render()
+            score += reward
+            obs = next_obs_batch[0]
             eval_scores.append(score)
         print('average evaluation score for model at ' + model_path + ' = ' +str(np.mean(eval_scores)))
         env.close()

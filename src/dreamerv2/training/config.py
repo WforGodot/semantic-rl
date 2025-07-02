@@ -32,7 +32,7 @@ class MinAtarConfig():
     seq_len: int = 50
     eval_episode: int = 4
     eval_render: bool = True
-    save_every: int = int(1e5)
+    save_every: int = 5000
     seed_steps: int = 4000
     model_dir: int = 'results'
     gif_dir: int = 'results'
@@ -115,7 +115,7 @@ class MiniGridConfig:
 
     # ─── Training Loop ─────────────────────────────────────────────
     train_steps: int = int(5e3)   # more total frames but cheaper per update
-    train_every: int = 2         # update every 16 env steps (was 5)
+    train_every: int = 4         
     collect_intervals: int = 4
     batch_size: int = 16          # **biggest memory lever** (was 50)
     seq_len: int = 16             # second lever (was 8 → 50)

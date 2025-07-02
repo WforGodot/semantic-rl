@@ -139,3 +139,6 @@ dmypy.json
 
 *.png
 *.mp4
+
+
+src.dreamerv2.results/
