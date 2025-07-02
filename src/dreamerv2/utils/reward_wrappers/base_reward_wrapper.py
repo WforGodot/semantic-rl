@@ -7,6 +7,7 @@
 # ----------------------------
 import importlib
 import gym
+import numpy as np
 
 class RewardShapingWrapper(gym.Wrapper):
     """
@@ -28,11 +29,26 @@ class RewardShapingWrapper(gym.Wrapper):
             self.shaper = None
 
     def step(self, action):
-        obs, reward, done, info = self.env.step(action)
-        if self.shaper:
-            # pass env for direct state access
-            info = info or {}
-            info["env"] = self.env
-            reward = self.shaper.shape_reward(obs, reward, done, info)
-        return obs, reward, done, info
+        """
+        Accept either 4- or 5-tuple from the wrapped env and *always*
+        return the Gymnasium 5-tuple upward so AsyncVectorEnv can batch.
+        Also inject `env` into the info dict for RewardShaper.
+        """
+        result = self.env.step(action)
 
+        # Unpack whichever length we got
+        if len(result) == 5:
+            obs, reward, terminated, truncated, info = result
+            done = bool(np.logical_or(terminated, truncated).any())
+        else:  # legacy 4-tuple
+            obs, reward, done, info = result
+            terminated, truncated = bool(done), False
+
+        # Reward shaping
+        if self.shaper:
+            info = info or {}
+            info["env"] = self.env          # ← needed by RewardShaper
+            reward = self.shaper.shape_reward(obs, reward, done, info)
+
+        # Return full 5-tuple for Gymnasium vector envs
+        return obs, reward, terminated, truncated, info

@@ -7,6 +7,30 @@ from gymnasium import spaces
 from gymnasium import ObservationWrapper
 from minigrid.wrappers import RGBImgPartialObsWrapper, ImgObsWrapper, FullyObsWrapper
 import inspect
+import cv2
+
+
+class SafeResizeObservation(ObservationWrapper):
+    """
+    cv2-based H×W resize that lives at module-top level ⇒ picklable.
+    """
+    def __init__(self, env, shape: tuple[int, int]):
+        super().__init__(env)
+        self.shape = shape            # (H, W)
+        h, w = shape
+        c = env.observation_space.shape[-1]
+        self.observation_space = spaces.Box(
+            low   = 0,
+            high  = 255,
+            shape = (h, w, c),
+            dtype = env.observation_space.dtype,
+        )
+
+    def observation(self, obs):
+        # cv2 expects (W, H) when resizing colour images
+        obs = cv2.resize(obs, self.shape[::-1], interpolation=cv2.INTER_AREA)
+        return obs
+
 
 class GymMiniGrid(ObservationWrapper):
     """
@@ -32,7 +56,7 @@ class GymMiniGrid(ObservationWrapper):
         env = FullyObsWrapper(env)
         env = ImgObsWrapper(env)
         # 4) Resize to target H×W
-        env = ResizeObservation(env, shape=resize_shape)
+        env = SafeResizeObservation(env, shape=resize_shape) 
         # Initialize ObservationWrapper
         super().__init__(env)
 
@@ -54,16 +78,23 @@ class GymMiniGrid(ObservationWrapper):
         return obs.astype(np.float32) / 255.0
 
     def step(self, action):
-        # Gymnasium step → (obs, reward, terminated, truncated, info)
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        done = terminated or truncated
-        obs = self.observation(obs)
-        return obs, reward, done, info
+            # Gymnasium step → (obs, reward, terminated, truncated, info)
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            obs = self.observation(obs)                         # transpose & normalize
+            return obs, reward, terminated, truncated, info     # forward full signature
 
     def reset(self, *args, **kwargs):
-        # Adapt reset API to classic Gym: return only obs
-        seed = kwargs.pop('seed', None)
-        options = kwargs.pop('options', None)
+        """
+        Gymnasium-style reset:
+
+        Returns (obs, info) even though Dreamer ultimately ignores `info`.
+        This keeps AsyncVectorEnv happy while remaining backward-compatible.
+        """
+        # Unpack explicit kwargs that Gymnasium may forward
+        seed    = kwargs.pop("seed", None)
+        options = kwargs.pop("options", None)
+
+        # Call the underlying env with or without seed
         try:
             if seed is not None and self._reset_accepts_seed:
                 result = self.env.reset(seed=seed, options=options)
@@ -71,6 +102,26 @@ class GymMiniGrid(ObservationWrapper):
                 result = self.env.reset(options=options) if options is not None else self.env.reset()
         except TypeError:
             result = self.env.reset()
-        # result: obs or (obs, info)
-        obs = result[0] if isinstance(result, tuple) else result
-        return self.observation(obs)
+
+        # Normalise return to (obs, info) tuple
+        if isinstance(result, tuple):
+            obs, info = result
+        else:
+            obs, info = result, {}
+
+        return self.observation(obs), info   # ← TWO values now
+
+    def seed(self, seed: int | None = None):
+        """
+        Provide the classic `env.seed()` API that Dreamer’s utils expect.
+
+        ▸ We forward the call to `.reset(seed=…)` if the wrapped
+          MiniGrid env supports it.
+
+        ▸ Returning `[seed]` keeps parity with old Gym signatures,
+          so any code that unpacks the return value won’t break.
+        """
+        if seed is not None and self._reset_accepts_seed:
+            # Under the hood this sets RNGs for env, action_space & obs_space
+            self.env.reset(seed=seed)
+        return [seed]   # classic-Gym convention

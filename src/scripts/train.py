@@ -1,4 +1,4 @@
-# dreamerv2/test/mdp_mg.py
+# dreamerv2/scripts/train.py
 import wandb
 import argparse
 import os
@@ -6,6 +6,8 @@ import torch
 import numpy as np
 import gymnasium as gym           # modern Gymnasium API for envs
 import gym as gym_old             # classic Gym for Discrete action-space conversion
+
+from gymnasium.vector import AsyncVectorEnv, VectorWrapper
 from dreamerv2.utils.wrapper import OneHotAction
 
 
@@ -34,8 +36,9 @@ def to_tensor(x, device):
     return torch.as_tensor(x, dtype=torch.float32, device=device).unsqueeze(0)
 
 def main(args):
-    # Login to W&B
-    wandb.login()
+    # Login to W&B only if not disabled
+    if not args.no_wandb:
+        wandb.login()
     env_name = args.env
     exp_id = args.id
 
@@ -54,29 +57,68 @@ def main(args):
         device = torch.device('cpu')
     print('Using device:', device)
     make_tensor = lambda x: to_tensor(x, device)
-    # Build environment pipeline using GymMiniGrid
-    env = GymMiniGrid(env_name, tile_size=11, resize_shape=(84, 84))
-    # observation_space is now (C, H, W)
-    raw_c, raw_h, raw_w = env.observation_space.shape
-    # 4) convert action_space to classic Gym Discrete so OneHotAction accepts it
-    env.action_space = gym_old.spaces.Discrete(env.action_space.n)
-    action_size = env.action_space.n  # capture number of discrete actions BEFORE one-hot encoding
 
-    env = OneHotAction(env)
+    def make_env(idx: int):
+        def _init():
+            env = GymMiniGrid(env_name, tile_size=11, resize_shape=(84, 84))
 
-    # Wrap with per-env shaper (env_name passed from args)
-    env = RewardShapingWrapper(env, env_name)
+            # ↓↓↓ ADD THIS LINE ↓↓↓ ─────────────────────────────────────────
+            env.action_space = gym_old.spaces.Discrete(env.action_space.n)
+            # ────────────────────────────────────────────────────────────────
 
-    # Shapes & dtypes (after transposition wrapper)
-    obs_shape = (raw_c, raw_h, raw_w)
+            env = OneHotAction(env)                    # now passes the assert
+
+            # --- BEGIN FIX: convert action_space → Gymnasium Box -----------------
+            n_actions = env.action_space.shape[0]  # size after one-hot
+            env.action_space = gym.spaces.Box(     # Gymnasium Box so AsyncVectorEnv accepts it
+                low=0.0, high=1.0, shape=(n_actions,), dtype=np.float32
+            )
+            # --- END FIX ---------------------------------------------------------
+            env = RewardShapingWrapper(env, env_name)
+            env.seed(args.seed + idx)
+            return env
+        return _init
+    
+    env_fns = [make_env(i) for i in range(args.num_envs)]
+
+    env = AsyncVectorEnv(env_fns)       # parallel CPU workers
+
+    # --- BEGIN FIX: Vector→Single-env adapter for Dreamer ---
+    class VecToSingle(VectorWrapper):
+        """
+        Run a VectorEnv in parallel, but expose only the first sub-env
+        as a classic (obs, reward, done, info) interface for Dreamer.
+        """
+        def reset(self, *args, **kwargs):
+            # Gymnasium reset() → (obs_batch, info_batch)
+            obs_b, _ = super().reset(*args, **kwargs)
+            return obs_b[0]          # pick first env’s obs
+
+        def step(self, actions):
+            # Gymnasium step() → (obs_b, rew_b, term_b, trunc_b, info_b)
+            obs_b, rew_b, term_b, trunc_b, info_b = super().step(actions)
+
+            # Combine termination flags
+            done_b = np.logical_or(term_b, trunc_b)
+
+            # Select the first env’s data
+            obs    = obs_b[0]
+            reward = float(rew_b[0])                   # scalar
+            done   = bool(done_b[0])                   # scalar
+            info   = info_b[0] if isinstance(info_b, (list, tuple)) else info_b
+
+            return obs, reward, done, info             # classic 4-tuple
+    # Wrap it:
+    env = VecToSingle(env)
+    # --- END FIX -------------------------------------------------
+
+    raw_c, raw_h, raw_w = env.single_observation_space.shape
+    action_size          = env.single_action_space.shape[0]
+    obs_shape            = (raw_c, raw_h, raw_w)
+
     obs_dtype = np.uint8
     action_dtype = np.float32
-    # Shapes & dtypes
-    obs_shape = (raw_c, raw_h, raw_w)
 
-    obs_dtype = np.uint8
-
-    action_dtype = np.float32
 
     # Config
     config = MiniGridConfig(
@@ -97,7 +139,12 @@ def main(args):
     evaluator = Evaluator(config, device)
 
         # Training loop
-    with wandb.init(project='miniGrid-world-models', config=config.__dict__):
+    if not args.no_wandb:
+        wandb_run = wandb.init(project='miniGrid-world-models', config=config.__dict__)
+    else:
+        wandb_run = None
+        
+    try:
         print('Starting training...')
         train_metrics = {}
         trainer.collect_seed_episodes(env)
@@ -155,10 +202,11 @@ def main(args):
                     )
 
                 # 5) log both galleries in one call
-                wandb.log({
-                    "slot_masks": raw_mask_images,
-                    "slot_overlays": overlay_images
-                }, step=step)
+                if not args.no_wandb:
+                    wandb.log({
+                        "slot_masks": raw_mask_images,
+                        "slot_overlays": overlay_images
+                    }, step=step)
 
             # periodic model updates
             if step % trainer.config.train_every == 0:
@@ -195,7 +243,8 @@ def main(args):
             if done:
                 train_metrics['train_rewards'] = score
                 train_metrics['action_ent'] = np.mean(episode_actor_ent)
-                wandb.log(train_metrics, step=step)
+                if not args.no_wandb:
+                    wandb.log(train_metrics, step=step)
 
                 scores.append(score)
                 print(f"Episode ended at step {step}, score: {score}, total episodes: {len(scores)}")
@@ -229,6 +278,11 @@ def main(args):
             torch.save(trainer.get_save_dict(), best_save_path)
         
         evaluator.eval_saved_agent(env, best_save_path)
+        
+    finally:
+        # Close wandb run if it was initialized
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 if __name__ == "__main__":
@@ -240,8 +294,12 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
     parser.add_argument("--seq_len", type=int, default=16, help="Sequence length")
     parser.add_argument("--train_steps", type=int, default=10000, help="Number of training steps")
+    parser.add_argument('--num_envs', type=int, default=4,
+                    help='Number of parallel MiniGrid copies')
+    parser.add_argument('--no_wandb', action='store_true',
+                    help='Disable Weights & Biases logging')
     args = parser.parse_args()
     main(args)
 
 
-# python test/mdp_mg.py --device cuda --batch_size=8 --seq_len=16 --train_steps 1000
+# python scripts/train.py   --env MiniGrid-DoorKey-6x6-v0   --id overnight   --device cuda   --batch_size 16   --seq_len 16   --train_steps 1000 --no_wandb     

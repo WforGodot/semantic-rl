@@ -36,6 +36,24 @@ class TransitionBuffer():
         reward: float,
         done: bool,
     ):
+        # --- BEGIN FIX: collapse batch dim for obs, action, reward, done ---
+        # obs: (N, C, H, W) → (C, H, W)
+        if hasattr(obs, "ndim") and obs.ndim == self.observation.ndim:
+            obs = obs[0]  # ← strip batch dim
+
+        # action: (N, A) → (A,)
+        if hasattr(action, "ndim") and action.ndim == self.action.ndim:
+            action = action[0]  # ← strip batch dim
+
+        # reward: (N,) → scalar
+        if hasattr(reward, "ndim") and reward.ndim == self.reward.ndim:
+            reward = reward[0]  # ← strip batch dim
+
+        # done: (N,) → bool
+        if hasattr(done, "ndim") and done.ndim == self.done.ndim:
+            done = done[0]      # ← strip batch dim
+        # --- END FIX -------------------------------------------------------
+
         self.observation[self.idx] = obs
         self.action[self.idx] = action 
         self.reward[self.idx] = reward

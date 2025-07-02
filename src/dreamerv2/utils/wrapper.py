@@ -130,14 +130,24 @@ class OneHotAction(gym.Wrapper):
         env.action_space.sample = self._sample_action
         super(OneHotAction, self).__init__(env)
     
-    def step(self, action):
-        index = np.argmax(action).astype(int)
-        reference = np.zeros_like(action)
-        reference[index] = 1
-        return self.env.step(index)
 
-    def reset(self):
-        return self.env.reset()
+    def step(self, action):
+        # Convert from one-hot array to scalar action index
+        index = int(np.argmax(action))  # ← what it does
+        # Step the wrapped env and unpack full (obs, reward, terminated, truncated, info)
+        obs, reward, terminated, truncated, info = self.env.step(index)
+        # Return all five elements so AsyncVectorEnv & trainer can unpack properly
+        return obs, reward, terminated, truncated, info  # ← why it must stay
+
+
+    def reset(self, *args, **kwargs):
+        """
+        Accept Gymnasium’s (seed=…, options=…) and still return (obs, info).
+        """
+        kwargs.pop("seed", None)
+        kwargs.pop("options", None)
+        return self.env.reset(*args, **kwargs)   # passes through (obs, info)
+
     
     def _sample_action(self):
         actions = self.env.action_space.shape[0]
