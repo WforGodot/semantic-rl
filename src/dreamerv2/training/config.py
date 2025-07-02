@@ -106,23 +106,23 @@ class MiniGridConfig:
     device: str = "cuda"
     pixel: bool = True          # set False if you switch to FlatObsWrapper
     action_repeat: int = 1
-    time_limit: int = 300       # was 1000
+    time_limit: int = 300       
 
     # ─── Replay Buffer ─────────────────────────────────────────────
-    capacity: int = 2000    # was 1e5; longer runs need more
+    capacity: int = 20_000    
     obs_dtype: np.dtype = np.uint8
     action_dtype: np.dtype = np.float32
 
     # ─── Training Loop ─────────────────────────────────────────────
     train_steps: int = int(5e3)   # more total frames but cheaper per update
-    train_every: int = 8         # update every 16 env steps (was 5)
+    train_every: int = 2         # update every 16 env steps (was 5)
     collect_intervals: int = 4
     batch_size: int = 16          # **biggest memory lever** (was 50)
     seq_len: int = 16             # second lever (was 8 → 50)
     eval_episode: int = 5
     eval_render: bool = False
     save_every: int = int(1e3)
-    seed_steps: int = 1000        # lower because buffer is smaller
+    seed_steps: int = 5000        # lower because buffer is smaller
     seed_episodes: int = 5
     model_dir: str = "results"
     gif_dir: str = "results"
@@ -144,8 +144,8 @@ class MiniGridConfig:
     # ─── Optimisation Objective ───────────────────────────────────
     grad_clip: float = 40.0         # lower clip for narrow nets
     discount_: float = 0.99
-    lambda_: float = 0.95
-    horizon: int = 6
+    lambda_: float = 0.97
+    horizon: int = 10
     lr: Dict = field(
         default_factory=lambda: {
             "model": 3e-4,          # +50 % helps smaller nets
@@ -196,7 +196,7 @@ class MiniGridConfig:
             "train_noise": 0.3,     # slightly less noise with small seq_len
             "eval_noise": 0.0,
             "expl_min": 0.05,
-            "expl_decay": 7000.0,   # faster decay
+            "expl_decay": 20000.0,   # faster decay
             "expl_type": "epsilon_greedy",
         }
     )

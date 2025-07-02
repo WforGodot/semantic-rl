@@ -83,7 +83,7 @@ def main(args):
 
     env = AsyncVectorEnv(
         env_fns,
-        autoreset_mode=AutoresetMode.NEXT_STEP  # ← correct param, resets each sub-env individually
+        autoreset_mode=AutoresetMode.SAME_STEP  # reset each sub-env in the same step call
     )
 
     raw_c, raw_h, raw_w = env.single_observation_space.shape
@@ -126,14 +126,17 @@ def main(args):
 
         # reset environment
         obs_b, _ = env.reset()
+        obs = obs_b[0]  # ← track env[0] obs for mask logging
         prev_rssmstate = trainer.RSSM._init_rssm_state(env.num_envs)    # ← now shape (N, …)
         prev_action    = torch.zeros(env.num_envs, trainer.action_size, device=device)  # ← (N, A)
-        score = 0
-        episode_actor_ent = []
-        scores = []
-        best_mean_score = -float('inf')
-        best_save_path = os.path.join(model_dir, 'models_best.pth')
-        episode_lengths = np.zeros(env.num_envs, dtype=int)  # ← track steps per env
+
+
+        episode_actor_ent  = []
+        episode_lengths   = np.zeros(env.num_envs, dtype=int)   # steps in current ep per env
+        episode_returns   = np.zeros(env.num_envs, dtype=float) # return in current ep per env
+        recent_returns    = []                                   # rolling window of returns
+        best_mean_return  = -float('inf')
+        best_save_path    = os.path.join(model_dir, 'models_best.pth')
 
         last_time = time.time()
         for step in range(1, trainer.config.train_steps + 1):
@@ -215,57 +218,36 @@ def main(args):
 
 
             episode_lengths += 1  # ← increment step counters for each env
+            episode_returns  += rew_b
+
             for i, finished in enumerate(done_b):
                 if finished:
-                    print(f"Env {i} finished an episode in {episode_lengths[i]} steps")  # ← log finish & length
-                    episode_lengths[i] = 0  # ← reset counter for that env
+                    if episode_lengths[i] < 360: # skip failures
+                        print(f"Env {i} finished episode: length={episode_lengths[i]} steps, return={episode_returns[i]:.1f}")
+                    recent_returns.append(episode_returns[i])     # store return
+                    episode_lengths[i] = 0                        # reset counters
+                    episode_returns[i] = 0.0
+                    if len(recent_returns) > 200:                # keep last 200
+                        recent_returns.pop(0)
+
+            if len(recent_returns) >= 20:                         # wait for 20 eps
+                mean_ret = float(np.mean(recent_returns[-20:]))
+                if mean_ret > best_mean_return:
+                    best_mean_return = mean_ret
+                    print(f"NEW BEST mean return {best_mean_return:.2f} (last 20) – saving model…")
+                    torch.save(trainer.get_save_dict(), best_save_path)
+
+
             score_b = rew_b  # vector of length N
 
             # Add *each* transition into the buffer
             for o, a, r, d in zip(obs_b, actions_b.cpu().numpy(), score_b, done_b):
                 trainer.buffer.add(o, a, float(r), bool(d))
 
-            # For logging & reset logic, we’ll track only env[0]:
-            score = score_b[0]
-            done = done_b[0]
-            next_obs = obs_n_b[0]
-
-            # Update for next step
-            obs_b = obs_n_b
-            prev_rssmstate = post_state_b
-            prev_action    = actions_b
-
-            # end of episode
-            if done:
-                train_metrics['train_rewards'] = score
-                train_metrics['action_ent'] = np.mean(episode_actor_ent)
-                if not args.no_wandb:
-                    wandb.log(train_metrics, step=step)
-
-                scores.append(score)
-                print(f"Episode ended at step {step}, score: {score}, total episodes: {len(scores)}")
-                
-                if len(scores) > 100:
-                    scores.pop(0)
-                
-                if len(scores) >= 10:  # Only evaluate best model after at least 10 episodes
-                    avg_score = np.mean(scores)
-                    print(f"Average score over last {len(scores)} episodes: {avg_score:.2f}, best so far: {best_mean_score:.2f}")
-                    if avg_score > best_mean_score:
-                        best_mean_score = avg_score
-                        print(f"NEW BEST! Saving best model (avg score: {best_mean_score:.2f})")
-                        torch.save(trainer.get_save_dict(), best_save_path)
-
-                obs = obs_n_b[0]
-                score = 0
-                prev_rssmstate = trainer.RSSM._init_rssm_state(env.num_envs)             # ← batched reset
-                prev_action    = torch.zeros(env.num_envs, trainer.action_size, device=device)  # ← (N, A)
-                episode_actor_ent = []
-            else:
-                obs = next_obs
-                obs_b = obs_n_b
-                prev_rssmstate = post_state_b
-                prev_action = actions_b
+            obs_b          = obs_n_b        # updated batch obs
+            obs            = obs_b[0]          # ← update env[0] obs for next mask logging
+            prev_rssmstate = post_state_b    # updated RSSM state
+            prev_action    = actions_b       # for next step
 
         # final evaluation
         # Save final model as best if no best model was saved during training
