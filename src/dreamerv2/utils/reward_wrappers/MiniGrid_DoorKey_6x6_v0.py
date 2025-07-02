@@ -74,30 +74,41 @@ class RewardShaper:
                     found_door = True
         if not found_key or not found_door:
             return
-
     def shape_reward(self, next_obs, base_reward, done, info):
+        """
+        Applies time penalty, novelty bonus, proximity/subgoal shaping, and final success reward.
+        Safely falls back to unshaped base_reward if env or agent_pos is missing.
+        """
+        # --- BEGIN FIX: guard against missing env or agent_pos -------------
         env = info.get("env")
         if env is None:
-            raise RuntimeError("RewardShaper needs env in info dict")
-        unwrapped_env = env.unwrapped
+            return base_reward  # no env → can’t shape
+        unwrapped_env = getattr(env, "unwrapped", None)
+        if unwrapped_env is None or not hasattr(unwrapped_env, "agent_pos"):
+            return base_reward  # missing underlying env or agent position
+        agent_pos = unwrapped_env.agent_pos
+        if agent_pos is None:
+            return base_reward  # agent_pos is None
+        # --- END FIX --------------------------------------------------------
 
         # Time penalty
         shaped = base_reward - self.step_penalty
         self.step_count += 1
-        agent_pos = unwrapped_env.agent_pos
 
+        # Initialize object positions on first step
         if self.step_count == 1:
             self._find_objects(unwrapped_env)
 
         # Annealed novelty bonus
         if agent_pos not in self.visited_positions:
-            anneal = max(0.0, 1.0 - self.step_count/self.max_steps)
+            anneal = max(0.0, 1.0 - self.step_count / self.max_steps)
             shaped += self.novelty_bonus * anneal
         self.visited_positions.add(agent_pos)
 
         # Proximity & subgoal rewards
         if not self.key_picked:
-            dist = math.hypot(agent_pos[0]-self.key_pos[0], agent_pos[1]-self.key_pos[1])
+            dist = math.hypot(agent_pos[0] - self.key_pos[0],
+                            agent_pos[1] - self.key_pos[1])
             if dist < self.prev_dist_to_key:
                 shaped += 0.02
             self.prev_dist_to_key = dist
@@ -105,7 +116,8 @@ class RewardShaper:
                 self.key_picked = True
                 shaped += self.key_base_reward + self._get_speed_bonus(self.optimal_steps_key)
         elif not self.door_opened:
-            dist = math.hypot(agent_pos[0]-self.door_pos[0], agent_pos[1]-self.door_pos[1])
+            dist = math.hypot(agent_pos[0] - self.door_pos[0],
+                            agent_pos[1] - self.door_pos[1])
             if dist < self.prev_dist_to_door:
                 shaped += 0.02
             self.prev_dist_to_door = dist
@@ -118,6 +130,7 @@ class RewardShaper:
         if base_reward > 0:
             shaped += self.goal_base_reward + self._get_speed_bonus(self.optimal_steps_goal)
 
+        # Reset episode state when done
         if done:
             self._reset_episode_state()
 

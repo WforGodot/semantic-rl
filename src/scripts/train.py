@@ -108,9 +108,6 @@ def main(args):
             info   = info_b[0] if isinstance(info_b, (list, tuple)) else info_b
 
             return obs, reward, done, info             # classic 4-tuple
-    # Wrap it:
-    env = VecToSingle(env)
-    # --- END FIX -------------------------------------------------
 
     raw_c, raw_h, raw_w = env.single_observation_space.shape
     action_size          = env.single_action_space.shape[0]
@@ -150,10 +147,10 @@ def main(args):
         trainer.collect_seed_episodes(env)
 
         # reset environment
-        obs = env.reset()
-        prev_rssmstate = trainer.RSSM._init_rssm_state(1)
-        prev_action = torch.zeros(1, trainer.action_size).to(device)
-        score = 0  # Initialize episode return before first loop
+        obs_b, _ = env.reset()
+        prev_rssmstate = trainer.RSSM._init_rssm_state(env.num_envs)    # ← now shape (N, …)
+        prev_action    = torch.zeros(env.num_envs, trainer.action_size, device=device)  # ← (N, A)
+        score = 0
         episode_actor_ent = []
         scores = []
         best_mean_score = -float('inf')
@@ -217,27 +214,40 @@ def main(args):
                 #trainer.save_model(step)
                 continue # skip saving during training for now
 
-            # select action via world model
+            # obs_b: (N, C, H, W); prev_actions_b: (N, A)
+            prev_actions_b = prev_action  # keep shape (N, A) from last step
             with torch.no_grad():
-                tensor_obs = make_tensor(obs)
-                embed = trainer.ObsEncoder(tensor_obs)
-                _, post_state = trainer.RSSM.rssm_observe(embed, prev_action, True, prev_rssmstate)
-                model_state = trainer.RSSM.get_model_state(post_state)
-                action, action_dist = trainer.ActionModel(model_state)
-                action = trainer.ActionModel.add_exploration(action, step).detach()
+                # 1) to tensor: (N, C, H, W) → (N, 1, C, H, W)
+                t_obs = torch.as_tensor(obs_b, dtype=torch.float32, device=device).unsqueeze(1)
+                # 2) encode & observe: handle batch in RSSM
+                emb_b = trainer.ObsEncoder(t_obs.reshape(-1, *obs_shape))
+                _, post_state_b = trainer.RSSM.rssm_observe(
+                    emb_b, prev_actions_b, True, prev_rssmstate
+                )
+                model_state_b = trainer.RSSM.get_model_state(post_state_b)
+                # 3) actor: returns (N, A)
+                actions_b, action_dist = trainer.ActionModel(model_state_b)
+                actions_b = trainer.ActionModel.add_exploration(actions_b, step).detach()
                 episode_actor_ent.append(torch.mean(action_dist.entropy()).item())
 
-            # step environment
-            result = env.step(action.squeeze(0).cpu().numpy())
-            if len(result) == 5:
-                next_obs, rew, terminated, truncated, _ = result
-                done = terminated or truncated
-            else:
-                next_obs, rew, done, _ = result
-            score += rew
+            # Step ALL N envs at once
+            obs_n_b, rew_b, term_b, trunc_b, info_b = env.step(actions_b.cpu().numpy())
+            done_b = np.logical_or(term_b, trunc_b)
+            score_b = rew_b  # vector of length N
 
-            # add to replay buffer
-            trainer.buffer.add(obs, action.squeeze(0).cpu().numpy(), rew, done)
+            # Add *each* transition into the buffer
+            for o, a, r, d in zip(obs_b, actions_b.cpu().numpy(), score_b, done_b):
+                trainer.buffer.add(o, a, float(r), bool(d))
+
+            # For logging & reset logic, we’ll track only env[0]:
+            score = score_b[0]
+            done = done_b[0]
+            next_obs = obs_n_b[0]
+
+            # Update for next step
+            obs_b = obs_n_b
+            prev_rssmstate = post_state_b
+            prev_action    = actions_b
 
             # end of episode
             if done:
@@ -260,16 +270,17 @@ def main(args):
                         print(f"NEW BEST! Saving best model (avg score: {best_mean_score:.2f})")
                         torch.save(trainer.get_save_dict(), best_save_path)
 
-                obs = env.reset()
-
+                obs_b, _ = env.reset()
+                obs = obs_b[0]
                 score = 0
-                prev_rssmstate = trainer.RSSM._init_rssm_state(1)
-                prev_action = torch.zeros(1, trainer.action_size).to(device)
+                prev_rssmstate = trainer.RSSM._init_rssm_state(env.num_envs)             # ← batched reset
+                prev_action    = torch.zeros(env.num_envs, trainer.action_size, device=device)  # ← (N, A)
                 episode_actor_ent = []
             else:
                 obs = next_obs
-                prev_rssmstate = post_state
-                prev_action = action
+                obs_b = obs_n_b
+                prev_rssmstate = post_state_b
+                prev_action = actions_b
 
         # final evaluation
         # Save final model as best if no best model was saved during training
@@ -294,7 +305,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
     parser.add_argument("--seq_len", type=int, default=16, help="Sequence length")
     parser.add_argument("--train_steps", type=int, default=10000, help="Number of training steps")
-    parser.add_argument('--num_envs', type=int, default=4,
+    parser.add_argument('--num_envs', type=int, default=1,
                     help='Number of parallel MiniGrid copies')
     parser.add_argument('--no_wandb', action='store_true',
                     help='Disable Weights & Biases logging')
@@ -302,4 +313,4 @@ if __name__ == "__main__":
     main(args)
 
 
-# python scripts/train.py   --env MiniGrid-DoorKey-6x6-v0   --id overnight   --device cuda   --batch_size 16   --seq_len 16   --train_steps 1000 --no_wandb     
+# python scripts/train.py   --env MiniGrid-DoorKey-6x6-v0   --id overnight   --device cuda   --batch_size 8   --seq_len 16   --train_steps 1000 --no_wandb  --num_envs 2   

@@ -40,16 +40,24 @@ class Trainer(object):
         self._optim_initialize(config)
 
     def collect_seed_episodes(self, env):
-        s, done  = env.reset(), False 
-        for i in range(self.seed_steps):
-            a = env.action_space.sample()
-            ns, r, done, _ = env.step(a)
-            if done:
-                self.buffer.add(s,a,r,done)
-                s, done  = env.reset(), False 
-            else:
-                self.buffer.add(s,a,r,done)
-                s = ns    
+
+        # Unwrap VecToSingle if present to get the underlying vector env
+        base_env = getattr(env, "env", env)
+        # Reset returns (obs_batch, info_batch)
+        reset_res = base_env.reset()
+        obs_batch = reset_res[0] if isinstance(reset_res, tuple) else reset_res
+        # Collect seed_steps batches of random transitions
+        for _ in range(self.seed_steps):
+            # Sample one action per parallel env
+            actions_b = base_env.action_space.sample()
+            # Step vector env -> (obs_b, rew_b, term_b, trunc_b, info_b)
+            obs_n_b, rew_b, term_b, trunc_b, _ = base_env.step(actions_b)
+            done_b = np.logical_or(term_b, trunc_b)  # (N,) bool array
+            # Add each sub-env's transition into the buffer
+            for ob, a, r, d in zip(obs_batch, actions_b, rew_b, done_b):
+                self.buffer.add(ob, a, float(r), bool(d))
+            # Prepare next batch
+            obs_batch = obs_n_b
 
     def train_batch(self, train_metrics):
         """ 
