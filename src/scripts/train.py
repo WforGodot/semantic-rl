@@ -279,7 +279,7 @@ if __name__ == "__main__":
     main(args)
 
 
-# python scripts/train.py   --env MiniGrid-DoorKey-6x6-v0   --id overnight   --device cuda   --batch_size 8   --seq_len 16   --train_steps 1000 --no_wandb  --num_envs 2   
+# python scripts/train.py   --env MiniGrid-DoorKey-6x6-v0   --id dayrun   --device cuda   --batch_size 16   --seq_len 16   --train_steps 25000  --num_envs 24   
 
 # wsl -d Ubuntu -- bash -lc "source /home/kappa/miniconda/etc/profile.d/conda.sh && conda activate dreamer && python3 /home/kappa/projects/semantic-rl/src/scripts/train.py --env MiniGrid-DoorKey-6x6-v0 --id pleasegoodrun --device cuda --batch_size 16 --seq_len 16 --train_steps 25000 --num_envs 32"
 

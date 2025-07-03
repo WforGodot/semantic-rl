@@ -115,7 +115,7 @@ class MiniGridConfig:
 
     # ─── Training Loop ─────────────────────────────────────────────
     train_steps: int = int(5e3)   # more total frames but cheaper per update
-    train_every: int = 400         
+    train_every: int = 4         
     collect_intervals: int = 4
     batch_size: int = 16          # **biggest memory lever** (was 50)
     seq_len: int = 16             # second lever (was 8 → 50)

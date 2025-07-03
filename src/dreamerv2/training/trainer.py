@@ -347,7 +347,7 @@ class Trainer(object):
             fname = "models_latest.pth"
 
         save_dict = self.get_save_dict()
-        save(model_dir / fname, save_dict)
+        save(save_dict, model_dir / fname)  # ← swap args: obj first, then path so f is a valid file‐path
     
     def save_if_missing(self, tag: str = "best") -> Path:
         """
