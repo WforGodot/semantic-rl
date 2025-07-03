@@ -115,14 +115,14 @@ class MiniGridConfig:
 
     # ─── Training Loop ─────────────────────────────────────────────
     train_steps: int = int(5e3)   # more total frames but cheaper per update
-    train_every: int = 4         
+    train_every: int = 400         
     collect_intervals: int = 4
     batch_size: int = 16          # **biggest memory lever** (was 50)
     seq_len: int = 16             # second lever (was 8 → 50)
     eval_episode: int = 5
     eval_render: bool = False
     save_every: int = int(1e3)
-    seed_steps: int = 5000        # lower because buffer is smaller
+    seed_steps: int = 1200     
     seed_episodes: int = 5
     model_dir: str = "results"
     gif_dir: str = "results"

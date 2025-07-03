@@ -136,7 +136,6 @@ def main(args):
         episode_returns   = np.zeros(env.num_envs, dtype=float) # return in current ep per env
         recent_returns    = []                                   # rolling window of returns
         best_mean_return  = -float('inf')
-        best_save_path    = os.path.join(model_dir, 'models_best.pth')
 
         last_time = time.time()
         for step in range(1, trainer.config.train_steps + 1):
@@ -190,10 +189,12 @@ def main(args):
             # periodic model updates
             if step % trainer.config.train_every == 0:
                 train_metrics = trainer.train_batch(train_metrics)
+                if wandb_run is not None:
+                    wandb.log(train_metrics, step=step)  # ← log metrics every train update for graphs
             if step % trainer.config.slow_target_update == 0:
                 trainer.update_target()
             if step % trainer.config.save_every == 0:
-                #trainer.save_model(step)
+                #trainer.save_model("latest")  # ← save model every 1000 steps
                 continue # skip saving during training for now
 
             # obs_b: (N, C, H, W); prev_actions_b: (N, A)
@@ -235,7 +236,7 @@ def main(args):
                 if mean_ret > best_mean_return:
                     best_mean_return = mean_ret
                     print(f"NEW BEST mean return {best_mean_return:.2f} (last 20) – saving model…")
-                    torch.save(trainer.get_save_dict(), best_save_path)
+                    trainer.save_model(tag="best")
 
 
             score_b = rew_b  # vector of length N
@@ -249,13 +250,11 @@ def main(args):
             prev_rssmstate = post_state_b    # updated RSSM state
             prev_action    = actions_b       # for next step
 
-        # final evaluation
-        # Save final model as best if no best model was saved during training
-        if not os.path.exists(best_save_path):
-            print(f"No best model was saved during training. Saving final model as best.")
-            torch.save(trainer.get_save_dict(), best_save_path)
-        
-        evaluator.eval_saved_agent(env, best_save_path)
+        # ─── Final evaluation ───────────────────────────────────────────────
+        best_ckpt = trainer.save_if_missing(tag="best")       # ← one-liner
+
+        # Pass *directory*; evaluator.resolve_ckpt() will pick the right file
+        evaluator.eval_saved_agent(env, trainer.config.model_dir)
         
     finally:
         # Close wandb run if it was initialized
@@ -281,3 +280,6 @@ if __name__ == "__main__":
 
 
 # python scripts/train.py   --env MiniGrid-DoorKey-6x6-v0   --id overnight   --device cuda   --batch_size 8   --seq_len 16   --train_steps 1000 --no_wandb  --num_envs 2   
+
+# wsl -d Ubuntu -- bash -lc "source /home/kappa/miniconda/etc/profile.d/conda.sh && conda activate dreamer && python3 /home/kappa/projects/semantic-rl/src/scripts/train.py --env MiniGrid-DoorKey-6x6-v0 --id pleasegoodrun --device cuda --batch_size 16 --seq_len 16 --train_steps 25000 --num_envs 32"
+

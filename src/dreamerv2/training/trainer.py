@@ -15,6 +15,10 @@ from dreamerv2.models.rssm import RSSM
 from dreamerv2.models.pixel import ObsDecoder, ObsEncoder
 from dreamerv2.utils.buffer import TransitionBuffer
 
+from torch import save
+from pathlib import Path
+from dreamerv2.utils.pathing import ensure_dir
+
 class Trainer(object):
     def __init__(
         self, 
@@ -327,11 +331,35 @@ class Trainer(object):
         for param, target_param in zip(self.ValueModel.parameters(), self.TargetValueModel.parameters()):
             target_param.data.copy_(mix * param.data + (1 - mix) * target_param.data)
 
-    def save_model(self, iter):
+    def save_model(self, iter=None, tag: str | None = None):
+        """
+        • iter=N  –→ models_000123.pth
+        • tag='best'   –→ models_best.pth
+        • tag='latest' –→ models_latest.pth
+        """
+        model_dir = ensure_dir(self.config.model_dir)
+
+        if tag:
+            fname = f"models_{tag}.pth"
+        elif iter is not None:
+            fname = f"models_{iter:06d}.pth"
+        else:
+            fname = "models_latest.pth"
+
         save_dict = self.get_save_dict()
-        model_dir = self.config.model_dir
-        save_path = os.path.join(model_dir, 'models_%d.pth' % iter)
-        torch.save(save_dict, save_path)
+        save(model_dir / fname, save_dict)
+    
+    def save_if_missing(self, tag: str = "best") -> Path:
+        """
+        Save the current weights as models_<tag>.pth *only if* that file
+        does not exist yet.  Returns the concrete Path either way.
+        """
+        model_dir = ensure_dir(self.config.model_dir)
+        ckpt = model_dir / f"models_{tag}.pth"
+        if not ckpt.exists():
+            self.save_model(tag=tag)
+            print(f"[trainer] Saved new '{tag}' checkpoint → {ckpt}")
+        return ckpt
 
     def get_save_dict(self):
         return {
@@ -409,7 +437,7 @@ class Trainer(object):
     
     def load_model(self, ckpt_path):
         """Load model checkpoint from given path."""
-        saved_dict = torch.load(ckpt_path, map_location=self.device)
+        saved_dict = torch.load(ckpt_path, map_location=self.device, weights_only=True)
         self.load_save_dict(saved_dict)
 
     def eval(self):

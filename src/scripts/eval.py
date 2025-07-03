@@ -12,6 +12,7 @@ from dreamerv2.training.config import MiniGridConfig
 from dreamerv2.training.trainer import Trainer
 import imageio
 import torch.nn.functional as F
+from dreamerv2.utils.pathing import resolve_ckpt
 
 def to_tensor(x, device):
     """
@@ -66,11 +67,15 @@ def main(args):
         model_dir=model_dir
     )
 
-    # Instantiate agent and load model
     trainer = Trainer(config, device)
-    ckpt = args.model_path or os.path.join(model_dir, 'models_best.pth')
-    if not os.path.exists(ckpt):
-        raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+
+    # • If --model-path is given, resolve it.  
+    # • Otherwise feed the *directory*; resolve_ckpt() will pick
+    #   models_best → models_latest → highest-numbered.
+    ckpt_spec = args.model_path or model_dir
+    ckpt = resolve_ckpt(ckpt_spec)
+
+    print(f"[eval] Loading checkpoint: {ckpt}")
     trainer.load_model(ckpt)
     trainer.eval()
 

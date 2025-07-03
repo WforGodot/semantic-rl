@@ -5,34 +5,30 @@ import math
 class RewardShaper:
     """
     Advanced reward shaping for MiniGrid-DoorKey-6x6-v0.
-    - Time penalty to incentivize speed.
-    - Annealed novelty bonus for exploring new squares.
-    - Proximity bonuses for moving closer to subgoals.
-    - Tunable, larger rewards for picking up the key, opening the door, and completing the episode.
     """
 
     def __init__(self):
         # Episode tracking
         self.step_count = 0
-        self.max_steps = 150  # Env timeout
+        self.max_steps = 150
 
         # Shaping hyperparameters
-        self.step_penalty      = 0.005   # cost each step
-        self.novelty_bonus     = 0.015   # initial exploration bonus
-        self.key_base_reward   = 2.0     # reward on key pickup
-        self.door_base_reward  = 3.0     # reward on door opening
-        self.goal_base_reward  = 5.0     # reward on final success
+        self.step_penalty      = 0.005
+        self.novelty_bonus     = 0.015
+        self.key_base_reward   = 2.0
+        self.door_base_reward  = 3.0
+        self.goal_base_reward  = 5.0
 
         # Speed bonus parameters
         self.optimal_steps_key  = 10
         self.optimal_steps_door = 15
         self.optimal_steps_goal = 25
 
-        # Subgoal flags and state
+        # Subgoal state
         self.key_picked  = False
         self.door_opened = False
-        self.key_pos   = None
-        self.door_pos  = None
+        self.key_pos     = None
+        self.door_pos    = None
         self.prev_dist_to_key  = float('inf')
         self.prev_dist_to_door = float('inf')
 
@@ -56,99 +52,78 @@ class RewardShaper:
         self.door_pos = None
         self.prev_dist_to_key = float('inf')
         self.prev_dist_to_door = float('inf')
-        self.visited_positions = set()
+        self.visited_positions.clear()
 
     def _find_objects(self, unwrapped_env):
-        if self.key_pos and self.door_pos:
-            return
-        found_key = False
-        found_door = False
+        # Locate key and door positions at episode start
         for y in range(unwrapped_env.height):
             for x in range(unwrapped_env.width):
                 cell = unwrapped_env.grid.get(x, y)
                 if isinstance(cell, Key):
                     self.key_pos = (x, y)
-                    found_key = True
                 elif isinstance(cell, Door):
                     self.door_pos = (x, y)
-                    found_door = True
-        if not found_key or not found_door:
-            return
+        # If either is missing, we'll skip subgoal shaping until next reset
+
     def shape_reward(self, next_obs, base_reward, done, info):
-        """
-        Applies time penalty, novelty bonus, proximity/subgoal shaping, and final success reward.
-        On any internal error (e.g. missing env, None agent_pos, unexpected NoneType),
-        returns the raw base_reward unmodified.
-        """
-        # Early exit if we don’t even have an env to work with
         env = info.get("env")
         if env is None:
             return base_reward
 
-        # Try everything inside a safe block
-        try:
-            unwrapped = getattr(env, "unwrapped", None)
-            agent_pos = getattr(unwrapped, "agent_pos", None)
-            if agent_pos is None:
-                return base_reward
+        unwrapped = getattr(env, "unwrapped", None)
+        agent_pos = getattr(unwrapped, "agent_pos", None)
+        if agent_pos is None:
+            return base_reward
 
-            # 1) Time penalty
-            shaped = base_reward - self.step_penalty
-            self.step_count += 1
+        # 1) Time penalty
+        shaped = base_reward - self.step_penalty
+        self.step_count += 1
 
-            # 2) On first step, locate key & door
-            if self.step_count == 1:
-                self._find_objects(unwrapped)
+        # 2) On first step, locate objects
+        if self.step_count == 1:
+            self._find_objects(unwrapped)
+            if self.key_pos is None or self.door_pos is None:
+                # Missing positions: skip shaping
+                if done:
+                    self._reset_episode_state()
+                return shaped
 
-            # 3) Novelty bonus (annealed)
-            if agent_pos not in self.visited_positions:
-                anneal = max(0.0, 1.0 - self.step_count / self.max_steps)
-                shaped += self.novelty_bonus * anneal
-            self.visited_positions.add(agent_pos)
+        # 3) Novelty bonus
+        if agent_pos not in self.visited_positions:
+            anneal = max(0.0, 1.0 - self.step_count / self.max_steps)
+            shaped += self.novelty_bonus * anneal
+        self.visited_positions.add(agent_pos)
 
-            # 4) Proximity & subgoal shaping
-            if not self.key_picked:
-                # distance to key
-                dist = math.hypot(
-                    agent_pos[0] - self.key_pos[0],
-                    agent_pos[1] - self.key_pos[1]
-                )
+        # 4) Proximity & subgoal shaping
+        if not self.key_picked:
+            if self.key_pos is not None:
+                dist = math.hypot(agent_pos[0] - self.key_pos[0], agent_pos[1] - self.key_pos[1])
                 if dist < self.prev_dist_to_key:
                     shaped += 0.02
                 self.prev_dist_to_key = dist
 
-                # picked key?
                 if unwrapped.carrying and isinstance(unwrapped.carrying, Key):
                     self.key_picked = True
                     shaped += self.key_base_reward + self._get_speed_bonus(self.optimal_steps_key)
 
-            elif not self.door_opened:
-                # distance to door
-                dist = math.hypot(
-                    agent_pos[0] - self.door_pos[0],
-                    agent_pos[1] - self.door_pos[1]
-                )
+        elif not self.door_opened:
+            if self.door_pos is not None:
+                dist = math.hypot(agent_pos[0] - self.door_pos[0], agent_pos[1] - self.door_pos[1])
                 if dist < self.prev_dist_to_door:
                     shaped += 0.02
                 self.prev_dist_to_door = dist
 
-                # opened door?
                 door_cell = unwrapped.grid.get(*self.door_pos)
                 if isinstance(door_cell, Door) and door_cell.is_open:
                     self.door_opened = True
                     shaped += self.door_base_reward + self._get_speed_bonus(self.optimal_steps_door)
 
-            # 5) Final success reward
-            if base_reward > 0:
-                shaped += self.goal_base_reward + self._get_speed_bonus(self.optimal_steps_goal)
+        # 5) Final success reward
+        if base_reward > 0:
+            shaped += self.goal_base_reward + self._get_speed_bonus(self.optimal_steps_goal)
 
-            # 6) Reset internal state at episode end
-            if done:
-                self._reset_episode_state()
+        # 6) Reset state at episode end
+        if done:
+            self._reset_episode_state()
 
-            return shaped
-
-        except Exception:
-            # Any unexpected error → fallback to raw reward
-            return base_reward
-
+        return shaped
