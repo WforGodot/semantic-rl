@@ -127,6 +127,27 @@ def main(args):
         # reset environment
         obs_b, _ = env.reset()
         obs = obs_b[0]  # ← track env[0] obs for mask logging
+
+        """
+        # Debugging: visualize the first observation
+        import matplotlib.pyplot as plt
+        
+        # --- BEGIN FIX: convert CHW ➜ HWC for debugging ---------------------------
+        if obs.ndim == 3 and obs.shape[0] in (1, 3):          # CHW → HWC
+            obs_vis = obs.transpose(1, 2, 0)                  # reorder axes
+        else:
+            obs_vis = obs                                     # already HWC
+        
+        # matplotlib (and later wandb.Image) want uint8 0-255
+        if obs_vis.dtype != np.uint8:
+            obs_vis = np.clip(obs_vis * 255, 0, 255).round().astype(np.uint8)
+        
+        plt.imshow(obs_vis)                                   # now valid image
+        # --- END FIX --------------------------------------------------------------
+        plt.title("env.reset() raw RGB");  plt.show()
+        """
+
+
         prev_rssmstate = trainer.RSSM._init_rssm_state(env.num_envs)    # ← now shape (N, …)
         prev_action    = torch.zeros(env.num_envs, trainer.action_size, device=device)  # ← (N, A)
 
@@ -145,9 +166,14 @@ def main(args):
                 last_time = time.time()
             
 
-            if step % 500 == 0:   # Log masks and overlays every 500 steps
+            if step % 500 == 499:  # Log masks and overlays every 500 steps
                 # 1) get the last raw frame (C,H,W) and convert to H×W×C
                 frame = obs.transpose(1, 2, 0)  # uint8 in [0,255], shape (H, W, C)
+
+                if frame.dtype != np.uint8:               # env gives float32
+                    frame = np.clip(frame * 255, 0, 255) \
+                             .round() \
+                             .astype(np.uint8)  
 
                 # 2) get & upsample masks (Bf, K, Hp*Wp) → (Bf, K, Hp, Wp) → (K, H, W)
                 attn    = trainer.ObsEncoder.slot_attn.last_attn    # (Bf, K, Hp*Wp)
@@ -161,7 +187,12 @@ def main(args):
 
                 # 3) prepare raw-mask images
                 raw_mask_images = [
-                    wandb.Image((mask * 255).astype(np.uint8), caption=f"mask slot {k}")
+                    wandb.Image(
+                        np.clip(mask * 255, 0, 255)                # scale & clip
+                            .round()
+                            .astype(np.uint8),                       # uint8 required
+                       caption=f"mask slot {k}"
+                   )
                     for k, mask in enumerate(masks_np)
                 ]
 

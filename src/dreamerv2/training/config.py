@@ -122,7 +122,7 @@ class MiniGridConfig:
     eval_episode: int = 5
     eval_render: bool = False
     save_every: int = int(1e3)
-    seed_steps: int = 1200     
+    seed_steps: int = 1000          # fewer seed steps for faster training     
     seed_episodes: int = 5
     model_dir: str = "results"
     gif_dir: str = "results"

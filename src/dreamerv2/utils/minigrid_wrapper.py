@@ -5,7 +5,7 @@ import gymnasium as gym
 from gymnasium.wrappers import ResizeObservation
 from gymnasium import spaces
 from gymnasium import ObservationWrapper
-from minigrid.wrappers import RGBImgPartialObsWrapper, ImgObsWrapper, FullyObsWrapper
+from minigrid.wrappers import RGBImgPartialObsWrapper, RGBImgObsWrapper, FullyObsWrapper
 import inspect
 import cv2
 
@@ -18,16 +18,24 @@ class SafeResizeObservation(ObservationWrapper):
         super().__init__(env)
         self.shape = shape            # (H, W)
         h, w = shape
-        c = env.observation_space.shape[-1]
+        space = env.observation_space
+        if isinstance(space, spaces.Dict):
+            # MiniGrid wraps the rendered frame under "image" or "rgb"
+            key   = "image" if "image" in space.spaces else "rgb"
+            space = space.spaces[key]           # ← Box with proper .shape
+        c = space.shape[-1]                     # channels (3)
         self.observation_space = spaces.Box(
             low   = 0,
             high  = 255,
             shape = (h, w, c),
-            dtype = env.observation_space.dtype,
+            dtype = space.dtype
         )
 
     def observation(self, obs):
         # cv2 expects (W, H) when resizing colour images
+        if isinstance(obs, dict):                       # returned by MiniGrid
+            obs = obs.get("image", obs.get("rgb"))      # Box → ndarray H×W×C
+        # cv2 expects (W, H) order
         obs = cv2.resize(obs, self.shape[::-1], interpolation=cv2.INTER_AREA)
         return obs
 
@@ -54,7 +62,7 @@ class GymMiniGrid(ObservationWrapper):
         env = gym.make(env_name, render_mode='rgb_array')
 
         env = FullyObsWrapper(env)
-        env = ImgObsWrapper(env)
+        env = RGBImgObsWrapper(env)
         # 4) Resize to target H×W
         env = SafeResizeObservation(env, shape=resize_shape) 
         # Initialize ObservationWrapper

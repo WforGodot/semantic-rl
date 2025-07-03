@@ -5,48 +5,6 @@ import torch.nn as nn
 from dreamerv2.models.slot_attention import SlotAttention
 
 
-class ObsEncoder_old(nn.Module):
-    def __init__(self, input_shape, embedding_size, info):
-        """
-        :param input_shape: tuple containing shape of input
-        :param embedding_size: Supposed length of encoded vector
-        """
-        super(ObsEncoder, self).__init__()
-        self.shape = input_shape
-        activation = info['activation']
-        d = info['depth']
-        k  = info['kernel']
-        self.k = k
-        self.d = d
-        self.convolutions = nn.Sequential(
-            nn.Conv2d(input_shape[0], d, k),
-            activation(),
-            nn.Conv2d(d, 2*d, k),
-            activation(),
-            nn.Conv2d(2*d, 4*d, k),
-            activation(),
-        )
-        if embedding_size == self.embed_size:
-            self.fc_1 = nn.Identity()
-        else:
-            self.fc_1 = nn.Linear(self.embed_size, embedding_size)
-
-    def forward(self, obs):
-        batch_shape = obs.shape[:-3]
-        img_shape = obs.shape[-3:]
-        embed = self.convolutions(obs.reshape(-1, *img_shape))
-        embed = torch.reshape(embed, (*batch_shape, -1))
-        embed = self.fc_1(embed)
-        return embed
-
-    @property
-    def embed_size(self):
-        conv1_shape = conv_out_shape(self.shape[1:], 0, self.k, 1)
-        conv2_shape = conv_out_shape(conv1_shape, 0, self.k, 1)
-        conv3_shape = conv_out_shape(conv2_shape, 0, self.k, 1)
-        embed_size = int(4*self.d*np.prod(conv3_shape).item())
-        return embed_size
-
 
 class ObsEncoder(nn.Module):
     """
@@ -100,7 +58,7 @@ class ObsEncoder(nn.Module):
         slots = self.slot_attn(x)                  # (Bf, num_slots, slot_dim)
         # ─── store attention maps for logging ───
         # `self.slot_attn.attn` is shape (Bf, num_slots, N_patches)
-        self.slot_attn.last_attn   = self.slot_attn.attn
+        self.slot_attn.last_attn   = self.slot_attn.attn.detach()  # detach to avoid gradients
         self.slot_attn.last_Hp_Wp  = (Hp, Wp)
 
         # 5) flatten slots  project
@@ -162,3 +120,49 @@ def conv_out_shape(h_in, padding, kernel_size, stride):
 
 def output_padding_shape(h_in, conv_out, padding, kernel_size, stride):
     return tuple(output_padding(h_in[i], conv_out[i], padding, kernel_size, stride) for i in range(len(h_in)))
+
+
+
+"""
+
+
+class ObsEncoder_old(nn.Module):
+    def __init__(self, input_shape, embedding_size, info):
+        super(ObsEncoder, self).__init__()
+        self.shape = input_shape
+        activation = info['activation']
+        d = info['depth']
+        k  = info['kernel']
+        self.k = k
+        self.d = d
+        self.convolutions = nn.Sequential(
+            nn.Conv2d(input_shape[0], d, k),
+            activation(),
+            nn.Conv2d(d, 2*d, k),
+            activation(),
+            nn.Conv2d(2*d, 4*d, k),
+            activation(),
+        )
+        if embedding_size == self.embed_size:
+            self.fc_1 = nn.Identity()
+        else:
+            self.fc_1 = nn.Linear(self.embed_size, embedding_size)
+
+    def forward(self, obs):
+        batch_shape = obs.shape[:-3]
+        img_shape = obs.shape[-3:]
+        embed = self.convolutions(obs.reshape(-1, *img_shape))
+        embed = torch.reshape(embed, (*batch_shape, -1))
+        embed = self.fc_1(embed)
+        return embed
+
+    @property
+    def embed_size(self):
+        conv1_shape = conv_out_shape(self.shape[1:], 0, self.k, 1)
+        conv2_shape = conv_out_shape(conv1_shape, 0, self.k, 1)
+        conv3_shape = conv_out_shape(conv2_shape, 0, self.k, 1)
+        embed_size = int(4*self.d*np.prod(conv3_shape).item())
+        return embed_size
+
+
+        """
